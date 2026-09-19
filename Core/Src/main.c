@@ -17,10 +17,12 @@
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
+#include <stdio.h>
 #include "main.h"
 #include "usart.h"
 #include "usb_otg.h"
 #include "gpio.h"
+#include "check.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -51,6 +53,12 @@
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
+int __io_putchar(int ch)
+{
+  uint8_t c = (uint8_t)ch;
+  HAL_UART_Transmit(&huart3, &c, 1U, HAL_MAX_DELAY);
+  return ch;
+}
 
 /* USER CODE END PFP */
 
@@ -91,7 +99,13 @@ int main(void)
   MX_USART3_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
   /* USER CODE BEGIN 2 */
+  printf("\r\n[OTA] bootloader start\r\n");
 
+  /* 状态机: 校验app / 升级 / 回滚. 正常路径会 jump2app() 或 NVIC_SystemReset(), 不返回 */
+  ota_check_config();
+
+  /* 能走到这里只有一种情况: state==fail, 没有可用app, 停在bootloader */
+  printf("[OTA] no valid app, stay in bootloader\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */

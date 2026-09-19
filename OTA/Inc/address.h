@@ -1,0 +1,22 @@
+#pragma once
+
+#define OTA_SRAM_BASE 0x20000000UL
+
+#define OTA_SRAM_END 0x20040000UL
+
+#define CONFIG_DATA_BASE 0x08010000UL
+
+/* 三槽布局: 固定运行槽R, 新固件暂存槽N, 旧固件备份槽K */
+#define SLOT_R_BASE 0x08020000UL
+
+#define SLOT_N_BASE 0x08060000UL
+
+#define SLOT_K_BASE 0x080A0000UL
+
+#define SLOT_SIZE 0x00040000UL
+
+#define SLOT_R_END (SLOT_R_BASE + SLOT_SIZE - 1UL)
+
+#define SLOT_N_END (SLOT_N_BASE + SLOT_SIZE - 1UL)
+
+#define SLOT_K_END (SLOT_K_BASE + SLOT_SIZE - 1UL)
