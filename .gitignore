@@ -5,4 +5,6 @@ __pycache__/
 *.su
 mcp-shell.log
 .claude/
-.embeddedskills/state.json
+.agents/
+.embeddedskills/
+skills-lock.json
