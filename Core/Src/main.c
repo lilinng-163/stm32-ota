@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body
+  * @brief          : OTA app (运行在slot R=0x08020000)
   ******************************************************************************
   * @attention
   *
@@ -20,13 +20,17 @@
 #include <stdio.h>
 #include "main.h"
 #include "usart.h"
-#include "usb_otg.h"
 #include "gpio.h"
-#include "check.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "address.h"
+#include "check.h"
+#include "crc32.h"
+#include "ota_client.h"
 
+/* 与上位机约定的固件包头magic */
+#define OTA_MAGIC   0x444C4F41UL   /* 'AOLD' */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -60,6 +64,15 @@ int __io_putchar(int ch)
   return ch;
 }
 
+/* app自检: 关键外设正常返回0. 这里只是示例 */
+static int app_selftest(void)
+{
+  if(huart3.Instance == NULL)
+  {
+    return -1;
+  }
+  return 0;
+}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -97,21 +110,70 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART3_UART_Init();
-  MX_USB_OTG_FS_PCD_Init();
   /* USER CODE BEGIN 2 */
-  printf("\r\n[OTA] bootloader start\r\n");
+  /* 若刚被bootloader装上(state==ready), 自检并转正为valid */
+  ota_client_boot_check(app_selftest);
 
-  /* 状态机: 校验app / 升级 / 回滚. 正常路径会 jump2app() 或 NVIC_SystemReset(), 不返回 */
-  ota_check_config();
-
-  /* 能走到这里只有一种情况: state==fail, 没有可用app, 停在bootloader */
-  printf("[OTA] no valid app, stay in bootloader\r\n");
+  printf("[APP] running, waiting for firmware...\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    uint32_t hdr[4];   /* magic, size, crc32, version */
+
+    /* 等包头 */
+    if(HAL_UART_Receive(&huart3, (uint8_t *)hdr, sizeof(hdr), 100) != HAL_OK)
+    {
+      continue;
+    }
+    if(hdr[0] != OTA_MAGIC)
+    {
+      printf("[APP] bad magic: %08lx\r\n", (unsigned long)hdr[0]);
+      continue;
+    }
+
+    printf("[APP] recv fw: size=%lu crc=%08lx ver=%08lx\r\n",
+           (unsigned long)hdr[1], (unsigned long)hdr[2], (unsigned long)hdr[3]);
+
+    /* 擦N槽, 准备接收 */
+    if(ota_client_begin(hdr[1], hdr[2]) != 0)
+    {
+      printf("[APP] begin fail\r\n");
+      continue;
+    }
+
+    uint8_t  buf[256];
+    uint32_t remain = hdr[1];
+    int      err = 0;
+
+    while(remain)
+    {
+      uint32_t n = (remain > sizeof(buf)) ? sizeof(buf) : remain;
+      if(HAL_UART_Receive(&huart3, buf, n, 5000) != HAL_OK)
+      {
+        err = 1;
+        break;
+      }
+      if(ota_client_write(buf, n) != 0)
+      {
+        err = 1;
+        break;
+      }
+      remain -= n;
+    }
+    if(err)
+    {
+      printf("[APP] recv fail\r\n");
+      continue;
+    }
+
+    /* 校验N槽, 写config(state=new_app), 复位交给bootloader; 不会返回 */
+    if(ota_client_finish() != 0)
+    {
+      printf("[APP] finish fail\r\n");
+    }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
