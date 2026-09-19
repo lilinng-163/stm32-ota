@@ -22,7 +22,7 @@
 #include "usart.h"
 #include "usb_otg.h"
 #include "gpio.h"
-#include "check.h"
+#include "ota_boot.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -99,6 +99,7 @@ int main(void)
   MX_USART3_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
   /* USER CODE BEGIN 2 */
+  HAL_GPIO_WritePin(GPIOB, LD1_Pin, GPIO_PIN_SET);   /* bootloader: LD1 */
   printf("\r\n[OTA] bootloader start\r\n");
 
   /* 状态机: 校验app / 升级 / 回滚. 正常路径会 jump2app() 或 NVIC_SystemReset(), 不返回 */

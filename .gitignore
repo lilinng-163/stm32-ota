@@ -1,8 +1,8 @@
 build/
 .vscode/
-a-check.su
+__pycache__/
+*.pyc
+*.su
 mcp-shell.log
 .claude/
 .embeddedskills/state.json
-__pycache__/
-*.pyc
