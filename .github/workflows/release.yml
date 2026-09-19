@@ -1,0 +1,62 @@
+name: Release
+
+# 打 tag (v*) 时自动编译 bootloader 与 app, 并创建 Release 挂上固件
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      # 分别取两个分支(不依赖 tag 所在分支)
+      - name: Checkout bootloader
+        uses: actions/checkout@v4
+        with:
+          ref: bootloader
+          path: boot
+
+      - name: Checkout app
+        uses: actions/checkout@v4
+        with:
+          ref: app
+          path: app
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi
+
+      - name: Build bootloader
+        run: |
+          cmake -S boot -B boot/build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=boot/cmake/gcc-arm-none-eabi.cmake \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build boot/build
+
+      - name: Build app1 / app2
+        run: |
+          for id in 1 2; do
+            cmake -S app -B app/build/A$id -G Ninja \
+              -DCMAKE_TOOLCHAIN_FILE=app/cmake/gcc-arm-none-eabi.cmake \
+              -DCMAKE_BUILD_TYPE=Release -DAPP_ID=$id
+            cmake --build app/build/A$id
+          done
+
+      - name: Pack artifacts
+        run: |
+          mkdir -p out
+          cp boot/build/ota.elf out/bootloader.elf
+          arm-none-eabi-objcopy -O binary boot/build/ota.elf     out/bootloader.bin
+          arm-none-eabi-objcopy -O binary app/build/A1/ota.elf   out/app1.bin
+          arm-none-eabi-objcopy -O binary app/build/A2/ota.elf   out/app2.bin
+          ls -l out
+
+      - name: Create release
+        run: gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes out/*
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
