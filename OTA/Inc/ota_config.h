@@ -31,8 +31,11 @@ typedef enum
     fail,        /* 无可用app */
 }ota_state;
 
+/* 读: 取最后一条有效记录 */
 ota_app_config_t *ota_read_config(void);
 
-int ota_erase_config(void);   /* 擦除 config 扇区(sector4) */
+/* 擦除整个 config 扇区(sector4), 一般由 ota_write_config 在写满时调用 */
+int ota_erase_config(void);
 
-int ota_write_config(const ota_app_config_t *modify);   /* 先写body, 最后写header */
+/* 写: 在扇区内追加一条记录(先body, 最后header); 写满则擦除后继续 */
+int ota_write_config(const ota_app_config_t *modify);
