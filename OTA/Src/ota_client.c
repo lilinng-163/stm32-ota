@@ -1,13 +1,17 @@
+#include <stddef.h>
 #include <stdint.h>
 #include "stm32f4xx_hal.h"
-#include "address.h"
-#include "crc32.h"
-#include "check.h"
+#include "ota_layout.h"
+#include "ota_crc32.h"
+#include "ota_config.h"
 #include "ota_client.h"
 
 /* N 槽在 sector7 起连续 2 个扇区(256K) */
 #define SLOT_N_SECTOR   FLASH_SECTOR_7
 #define SLOT_N_SECTORS  2U
+
+/* 固件包: magic | size | crc32 | version, 各4字节小端 */
+#define OTA_HDR_WORDS   4U
 
 static uint32_t s_size;       /* 期望总字节数 */
 static uint32_t s_crc;        /* 期望 CRC32 */
@@ -46,51 +50,6 @@ static int erase_slot_n(void)
     HAL_StatusTypeDef st = HAL_FLASHEx_Erase(&e, &sec_err);
     HAL_FLASH_Lock();
     return (st == HAL_OK) ? 0 : -1;
-}
-
-/* config 在 sector4, app 侧读/写(与 bootloader 同一结构) */
-ota_app_config_t *ota_read_config(void)
-{
-    return (ota_app_config_t *)CONFIG_DATA_BASE;
-}
-
-static int config_write(const ota_app_config_t *cfg)
-{
-    const uint32_t *word = (const uint32_t *)cfg;
-    uint32_t words = sizeof(ota_app_config_t) / 4U;
-    uint32_t sec_err = 0;
-    FLASH_EraseInitTypeDef e =
-    {
-        .TypeErase    = FLASH_TYPEERASE_SECTORS,
-        .VoltageRange = FLASH_VOLTAGE_RANGE_3,
-        .Sector       = FLASH_SECTOR_4,
-        .NbSectors    = 1,
-    };
-
-    HAL_FLASH_Unlock();
-    __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR |
-                           FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
-    if(HAL_FLASHEx_Erase(&e, &sec_err) != HAL_OK)
-    {
-        HAL_FLASH_Lock();
-        return -1;
-    }
-    /* 先写body, 最后写header, 保证header存在=config完整 */
-    for(uint32_t i = 1; i < words; i++)
-    {
-        if(HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, CONFIG_DATA_BASE + i * 4U, word[i]) != HAL_OK)
-        {
-            HAL_FLASH_Lock();
-            return -1;
-        }
-    }
-    if(HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, CONFIG_DATA_BASE, word[0]) != HAL_OK)
-    {
-        HAL_FLASH_Lock();
-        return -1;
-    }
-    HAL_FLASH_Lock();
-    return 0;
 }
 
 int ota_client_begin(uint32_t size, uint32_t crc)
@@ -159,17 +118,66 @@ int ota_client_finish(void)
         return -1;                  /* N槽内容校验失败 */
     }
 
-    /* 记录新固件信息, 转 new_app, 复位交给 bootloader 安装 */
+    /* 记录新固件信息, 转 new_app (复位交给调用者) */
     ota_app_config_t cfg = *ota_read_config();
     cfg.n_size = s_size;
     cfg.n_crc  = s_crc;
     cfg.state  = new_app;
-    if(config_write(&cfg) != 0)
+    return ota_write_config(&cfg);
+}
+
+int ota_client_run(const ota_io_t *io)
+{
+    uint32_t hdr[OTA_HDR_WORDS];
+    uint8_t  buf[256];
+
+    /* 1. 等包头(超时/内容不对就返回, 让调用者重试) */
+    if(io->recv((uint8_t *)hdr, sizeof(hdr), 200) != (int)sizeof(hdr))
     {
         return -1;
     }
+    if(hdr[0] != OTA_MAGIC)
+    {
+        return -2;
+    }
 
-    NVIC_SystemReset();
+    /* 2. 擦N槽 */
+    if(ota_client_begin(hdr[1], hdr[2]) != 0)
+    {
+        io->send((const uint8_t *)OTA_ACK_ERR, sizeof(OTA_ACK_ERR) - 1U);
+        return -3;
+    }
+
+    /* 3. 擦完通知上位机可以发数据了 */
+    io->send((const uint8_t *)OTA_ACK_READY, sizeof(OTA_ACK_READY) - 1U);
+
+    /* 4. 收数据, 顺序写N槽 */
+    uint32_t remain = hdr[1];
+    while(remain)
+    {
+        uint32_t n = (remain > sizeof(buf)) ? sizeof(buf) : remain;
+        if(io->recv(buf, n, 5000) != (int)n)
+        {
+            io->send((const uint8_t *)OTA_ACK_ERR, sizeof(OTA_ACK_ERR) - 1U);
+            return -4;
+        }
+        if(ota_client_write(buf, n) != 0)
+        {
+            io->send((const uint8_t *)OTA_ACK_ERR, sizeof(OTA_ACK_ERR) - 1U);
+            return -5;
+        }
+        remain -= n;
+    }
+
+    /* 5. 校验N槽并写config(new_app) */
+    if(ota_client_finish() != 0)
+    {
+        io->send((const uint8_t *)OTA_ACK_ERR, sizeof(OTA_ACK_ERR) - 1U);
+        return -6;
+    }
+
+    io->send((const uint8_t *)OTA_ACK_OK, sizeof(OTA_ACK_OK) - 1U);
+    NVIC_SystemReset();             /* 复位交给bootloader安装; 不返回 */
     return 0;
 }
 
@@ -182,12 +190,12 @@ void ota_client_boot_check(int (*selftest)(void))
         return;                     /* 正常启动, 不用自检 */
     }
 
-    if(selftest == 0 || selftest() == 0)
+    if(selftest == NULL || selftest() == 0)
     {
         ota_app_config_t cfg = *p;
         cfg.state = valid;          /* 自检通过, 转正 */
         cfg.cnt   = 0;
-        config_write(&cfg);
+        ota_write_config(&cfg);
     }
     /* 自检失败: 什么都不写, bootloader 每次启动 cnt++, 超限会回滚 */
 }

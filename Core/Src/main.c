@@ -24,13 +24,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "address.h"
-#include "check.h"
-#include "crc32.h"
+#include "ota_layout.h"
 #include "ota_client.h"
-
-/* 与上位机约定的固件包头magic */
-#define OTA_MAGIC   0x444C4F41UL   /* 'AOLD' */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -40,7 +35,16 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+/* 运行指示灯: app1->LD2, app2->LD3 (app2 编译时 -DAPP_ID=2) */
+#ifndef APP_ID
+#define APP_ID 1
+#endif
 
+#if (APP_ID == 2)
+#define APP_LED_Pin   LD3_Pin
+#else
+#define APP_LED_Pin   LD2_Pin
+#endif
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -77,7 +81,24 @@ static int app_selftest(void)
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/* USART3 传输层: 实现 ota_io_t 的 recv/send. 换网口就再写一份挂上去 */
+static int uart_recv(uint8_t *buf, uint32_t len, uint32_t timeout_ms)
+{
+  if(HAL_UART_Receive(&huart3, buf, (uint16_t)len, timeout_ms) != HAL_OK)
+  {
+    return 0;                 /* 超时/出错: 按收0字节算 */
+  }
+  return (int)len;
+}
 
+static int uart_send(const uint8_t *buf, uint32_t len)
+{
+  if(HAL_UART_Transmit(&huart3, (uint8_t *)buf, (uint16_t)len, HAL_MAX_DELAY) != HAL_OK)
+  {
+    return -1;
+  }
+  return (int)len;
+}
 /* USER CODE END 0 */
 
 /**
@@ -88,7 +109,8 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  /* app运行在slot R, 向量表必须指向这里. 趁中断还没开先写 (HAL_Init会开SysTick) */
+  SCB->VTOR = SLOT_R_BASE;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -111,69 +133,26 @@ int main(void)
   MX_GPIO_Init();
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
+  /* bootloader是__disable_irq()跳过来的, 这里把全局中断打开(HAL_GetTick依赖SysTick) */
+  __enable_irq();
+
+  /* 运行指示: app1->LD2, app2->LD3 */
+  HAL_GPIO_WritePin(GPIOB, APP_LED_Pin, GPIO_PIN_SET);
+
   /* 若刚被bootloader装上(state==ready), 自检并转正为valid */
   ota_client_boot_check(app_selftest);
 
-  printf("[APP] running, waiting for firmware...\r\n");
+  printf("[APP%d] running, waiting for firmware...\r\n", APP_ID);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  ota_io_t io = { .recv = uart_recv, .send = uart_send };
   while (1)
   {
-    uint32_t hdr[4];   /* magic, size, crc32, version */
-
-    /* 等包头 */
-    if(HAL_UART_Receive(&huart3, (uint8_t *)hdr, sizeof(hdr), 100) != HAL_OK)
-    {
-      continue;
-    }
-    if(hdr[0] != OTA_MAGIC)
-    {
-      printf("[APP] bad magic: %08lx\r\n", (unsigned long)hdr[0]);
-      continue;
-    }
-
-    printf("[APP] recv fw: size=%lu crc=%08lx ver=%08lx\r\n",
-           (unsigned long)hdr[1], (unsigned long)hdr[2], (unsigned long)hdr[3]);
-
-    /* 擦N槽, 准备接收 */
-    if(ota_client_begin(hdr[1], hdr[2]) != 0)
-    {
-      printf("[APP] begin fail\r\n");
-      continue;
-    }
-
-    uint8_t  buf[256];
-    uint32_t remain = hdr[1];
-    int      err = 0;
-
-    while(remain)
-    {
-      uint32_t n = (remain > sizeof(buf)) ? sizeof(buf) : remain;
-      if(HAL_UART_Receive(&huart3, buf, n, 5000) != HAL_OK)
-      {
-        err = 1;
-        break;
-      }
-      if(ota_client_write(buf, n) != 0)
-      {
-        err = 1;
-        break;
-      }
-      remain -= n;
-    }
-    if(err)
-    {
-      printf("[APP] recv fail\r\n");
-      continue;
-    }
-
-    /* 校验N槽, 写config(state=new_app), 复位交给bootloader; 不会返回 */
-    if(ota_client_finish() != 0)
-    {
-      printf("[APP] finish fail\r\n");
-    }
+    /* 跑一次完整接收流程: 等包头->擦->收->校验->置new_app->复位
+     * 出错则返回, 回到这里重来; 成功会复位, 不返回 */
+    ota_client_run(&io);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

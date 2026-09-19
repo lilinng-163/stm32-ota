@@ -2,18 +2,18 @@
 
 #include <stdint.h>
 
-/* config 有效性 magic, 命中才认为配置可用 */
+/* config 有效性 magic: 命中才认为配置可用 */
 #define OTA_APP_CONFIG_T_HEADER 0x20051129UL
 
 /*
- * OTA 配置, 存在 CONFIG_DATA_BASE(sector4)
+ * OTA 配置, 存于 CONFIG_DATA_BASE (sector4)
  * r_/n_/k_ 分别是 运行槽R / 新固件槽N / 备份槽K 的镜像信息
  */
 typedef struct
 {
     uint32_t header;   /* magic */
     uint32_t state;    /* ota_state */
-    uint32_t cnt;      /* ready状态下连续启动次数, 超限回滚 */
+    uint32_t cnt;      /* ready 状态下连续启动次数, 超限回滚 */
     uint32_t r_size;   /* 运行槽R 镜像大小 */
     uint32_t r_crc;    /* 运行槽R 镜像 CRC32 */
     uint32_t n_size;   /* 新固件槽N 镜像大小 */
@@ -31,11 +31,8 @@ typedef enum
     fail,        /* 无可用app */
 }ota_state;
 
-/* 上电调用一次: 校验app/升级/回滚, 正常会跳转或复位, 不返回 */
-int ota_check_config(void);
-
 ota_app_config_t *ota_read_config(void);
 
-int ota_erase_config(void);
+int ota_erase_config(void);   /* 擦除 config 扇区(sector4) */
 
-int ota_write_config(const ota_app_config_t *modify);
+int ota_write_config(const ota_app_config_t *modify);   /* 先写body, 最后写header */

@@ -55,8 +55,11 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 )
 
 # Add project symbols (macros)
+if(NOT DEFINED APP_ID)
+    set(APP_ID 1)
+endif()
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined symbols
+    APP_ID=${APP_ID}
 )
 
 # Remove wrong libob.a library dependency when using cpp files
