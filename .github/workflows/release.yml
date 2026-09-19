@@ -30,11 +30,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi
+          arm-none-eabi-gcc --version | head -1
+          ninja --version
 
       - name: Build bootloader
         run: |
           cmake -S boot -B boot/build -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE=boot/cmake/gcc-arm-none-eabi.cmake \
+            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/boot/cmake/gcc-arm-none-eabi.cmake" \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build boot/build
 
@@ -42,7 +44,7 @@ jobs:
         run: |
           for id in 1 2; do
             cmake -S app -B app/build/A$id -G Ninja \
-              -DCMAKE_TOOLCHAIN_FILE=app/cmake/gcc-arm-none-eabi.cmake \
+              -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/app/cmake/gcc-arm-none-eabi.cmake" \
               -DCMAKE_BUILD_TYPE=Release -DAPP_ID=$id
             cmake --build app/build/A$id
           done
@@ -51,9 +53,9 @@ jobs:
         run: |
           mkdir -p out
           cp boot/build/ota.elf out/bootloader.elf
-          arm-none-eabi-objcopy -O binary boot/build/ota.elf     out/bootloader.bin
-          arm-none-eabi-objcopy -O binary app/build/A1/ota.elf   out/app1.bin
-          arm-none-eabi-objcopy -O binary app/build/A2/ota.elf   out/app2.bin
+          arm-none-eabi-objcopy -O binary boot/build/ota.elf    out/bootloader.bin
+          arm-none-eabi-objcopy -O binary app/build/A1/ota.elf  out/app1.bin
+          arm-none-eabi-objcopy -O binary app/build/A2/ota.elf  out/app2.bin
           ls -l out
 
       - name: Create release
